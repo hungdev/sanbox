@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   Save,
   Square,
+  Braces,
+  List,
 } from "lucide-react";
 import CodeEditor from "./CodeEditor";
 import OutputPanel from "./OutputPanel";
@@ -29,6 +31,8 @@ export default function SandboxEditor({ id }) {
   const [htmlOutput, setHtmlOutput] = useState("");
   const [panelWidth, setPanelWidth] = useState(50);
   const [isSaved, setIsSaved] = useState(true);
+  const [inspectMode, setInspectMode] = useState("simple");
+  const [hasRun, setHasRun] = useState(false);
   const containerRef = useRef(null);
   const isResizing = useRef(false);
 
@@ -148,53 +152,102 @@ export default function SandboxEditor({ id }) {
         return;
       }
 
+      const isDetailed = inspectMode === "detailed";
+
+      const formatValue = (val, depth = 0, seen = new WeakSet()) => {
+        if (val === null) return "null";
+        if (val === undefined) return "undefined";
+        if (typeof val === "string") return depth > 0 ? `"${val}"` : val;
+        if (typeof val === "number" || typeof val === "boolean") return String(val);
+        if (typeof val === "symbol") return val.toString();
+        if (typeof val === "function") return `[Function: ${val.name || "anonymous"}]`;
+        if (typeof val === "bigint") return `${val}n`;
+
+        if (typeof val === "object") {
+          if (seen.has(val)) return "[Circular]";
+          seen.add(val);
+
+          if (val instanceof Error) return `${val.name}: ${val.message}`;
+          if (val instanceof Date) return val.toISOString();
+          if (val instanceof RegExp) return val.toString();
+          if (val instanceof Map) {
+            const entries = [...val.entries()].map(([k, v]) => `${formatValue(k, depth + 1, seen)} => ${formatValue(v, depth + 1, seen)}`);
+            return `Map(${val.size}) { ${entries.join(", ")} }`;
+          }
+          if (val instanceof Set) {
+            const entries = [...val.values()].map((v) => formatValue(v, depth + 1, seen));
+            return `Set(${val.size}) { ${entries.join(", ")} }`;
+          }
+
+          if (Array.isArray(val)) {
+            if (depth > 3) return "[Array]";
+            const items = val.map((v) => formatValue(v, depth + 1, seen));
+            return `[${items.join(", ")}]`;
+          }
+
+          if (depth > 3) return "{...}";
+
+          if (!isDetailed) {
+            try {
+              const result = JSON.stringify(val, null, 2);
+              if (result !== undefined) return result;
+            } catch {}
+            return String(val);
+          }
+
+          const indent = "  ".repeat(depth + 1);
+          const closingIndent = "  ".repeat(depth);
+
+          const ownKeys = Object.getOwnPropertyNames(val);
+          const ownPairs = ownKeys.map((k) => {
+            try { return `${indent}${k}: ${formatValue(val[k], depth + 1, seen)}`; }
+            catch { return `${indent}${k}: [Getter]`; }
+          });
+
+          const proto = Object.getPrototypeOf(val);
+          const hasCustomProto = proto && proto !== Object.prototype;
+          let protoStr = "";
+          if (hasCustomProto) {
+            const protoKeys = Object.getOwnPropertyNames(proto).filter((k) => k !== "constructor");
+            if (protoKeys.length > 0) {
+              const protoPairs = protoKeys.map((k) => {
+                try { return `${indent}  ${k}: ${formatValue(proto[k], depth + 2, seen)}`; }
+                catch { return `${indent}  ${k}: [Getter]`; }
+              });
+              protoStr = `${indent}[[Prototype]]: {\n${protoPairs.join(",\n")}\n${indent}}`;
+            }
+          }
+
+          const allParts = [...ownPairs];
+          if (protoStr) allParts.push(protoStr);
+
+          if (allParts.length === 0) return "{}";
+
+          return `{\n${allParts.join(",\n")}\n${closingIndent}}`;
+        }
+
+        return String(val);
+      };
+
+      const formatArgs = (args) =>
+        args.map((a) => formatValue(a)).join(" ");
+
       const originalConsole = { ...console };
       const fakeConsole = {
         log: (...args) => {
-          collectedOutputs.push({
-            type: "log",
-            content: args
-              .map((a) =>
-                typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)
-              )
-              .join(" "),
-          });
+          collectedOutputs.push({ type: "log", content: formatArgs(args) });
         },
         error: (...args) => {
-          collectedOutputs.push({
-            type: "error",
-            content: args
-              .map((a) =>
-                typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)
-              )
-              .join(" "),
-          });
+          collectedOutputs.push({ type: "error", content: formatArgs(args) });
         },
         warn: (...args) => {
-          collectedOutputs.push({
-            type: "warn",
-            content: args
-              .map((a) =>
-                typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)
-              )
-              .join(" "),
-          });
+          collectedOutputs.push({ type: "warn", content: formatArgs(args) });
         },
         info: (...args) => {
-          collectedOutputs.push({
-            type: "log",
-            content: args
-              .map((a) =>
-                typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)
-              )
-              .join(" "),
-          });
+          collectedOutputs.push({ type: "log", content: formatArgs(args) });
         },
         table: (data) => {
-          collectedOutputs.push({
-            type: "log",
-            content: JSON.stringify(data, null, 2),
-          });
+          collectedOutputs.push({ type: "log", content: formatValue(data) });
         },
       };
 
@@ -210,8 +263,19 @@ export default function SandboxEditor({ id }) {
     }
 
     setOutputs(collectedOutputs);
+    setHasRun(true);
     setTimeout(() => setIsRunning(false), 300);
-  }, [sandbox, code, handleSave]);
+  }, [sandbox, code, handleSave, inspectMode]);
+
+  const prevInspectMode = useRef(inspectMode);
+  useEffect(() => {
+    if (prevInspectMode.current !== inspectMode) {
+      prevInspectMode.current = inspectMode;
+      if (hasRun) {
+        handleRun();
+      }
+    }
+  }, [inspectMode, hasRun, handleRun]);
 
   const handleMouseDown = useCallback(() => {
     isResizing.current = true;
@@ -396,6 +460,28 @@ export default function SandboxEditor({ id }) {
           >
             <Save size={14} />
             Save
+          </button>
+
+          <button
+            onClick={() => setInspectMode(inspectMode === "simple" ? "detailed" : "simple")}
+            title={inspectMode === "simple" ? "Simple mode: JSON.stringify (own enumerable only)" : "Detailed mode: All properties + prototype chain"}
+            style={{
+              background: inspectMode === "detailed" ? "rgba(0, 121, 242, 0.15)" : "transparent",
+              border: inspectMode === "detailed" ? "1px solid var(--accent)" : "1px solid var(--border-color)",
+              color: inspectMode === "detailed" ? "var(--accent)" : "var(--text-muted)",
+              padding: "7px 14px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 500,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              transition: "all 0.2s",
+            }}
+          >
+            {inspectMode === "simple" ? <Braces size={14} /> : <List size={14} />}
+            {inspectMode === "simple" ? "Simple" : "Detailed"}
           </button>
 
           <button
