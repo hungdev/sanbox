@@ -136,43 +136,94 @@ export default function SandboxEditor({ id }) {
         }
       }
 
-      if (sandbox.language === "python") {
-        const lines = code.split("\n");
-        const output = [];
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith("print(")) {
-            const match = trimmed.match(/print\((.*)\)/);
-            if (match) {
-              try {
-                let content = match[1];
-                content = content.replace(/f"([^"]*)"/, (_, template) => {
-                  return `"${template.replace(/\{([^}]+)\}/g, "\\${$1}")}"`;
-                });
-                const result = new Function(
-                  `try { return ${content}; } catch(e) { return ${content}; }`
-                )();
-                output.push(String(result));
-              } catch {
-                output.push(match[1]);
-              }
-            }
-          }
-        }
-        if (output.length > 0) {
-          output.forEach((line) => {
-            collectedOutputs.push({ type: "log", content: line });
+      if (sandbox.language === "react") {
+        try {
+          const strippedCode = code.replace(/^import\s+.*?from\s+['"]react['"];?\s*$/gm, "");
+
+          const result = transform(strippedCode, {
+            transforms: ["jsx"],
+            jsxRuntime: "classic",
+            production: true,
           });
-        } else {
+          const transpiledCode = result.code;
+
+          const reactHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>
+<style>* { margin: 0; box-sizing: border-box; }</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function() {
+  var _posted = {};
+  ['log','error','warn','info'].forEach(function(m) {
+    var orig = window.console[m];
+    window.console[m] = function() {
+      var args = [];
+      for (var i = 0; i < arguments.length; i++) {
+        try {
+          args.push(typeof arguments[i] === 'object' ? JSON.stringify(arguments[i], null, 2) : String(arguments[i]));
+        } catch(e) { args.push(String(arguments[i])); }
+      }
+      var key = m + ':' + args.join(' ');
+      if (!_posted[key]) { _posted[key] = 0; }
+      _posted[key]++;
+      if (_posted[key] <= 5) {
+        window.parent.postMessage({ type: 'console', method: m === 'info' ? 'log' : m, content: args.join(' ') }, '*');
+      }
+      if (orig) orig.apply(console, arguments);
+    };
+  });
+  window.onerror = function(msg, url, line) {
+    window.parent.postMessage({ type: 'console', method: 'error', content: msg + (line ? ' (line ' + line + ')' : '') }, '*');
+  };
+})();
+<\/script>
+<script>
+var { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext, createContext, Fragment, memo, forwardRef, lazy, Suspense, StrictMode, Children, cloneElement, createElement, isValidElement } = React;
+var { createRoot, createPortal } = ReactDOM;
+
+try {
+  ${transpiledCode}
+
+  var _appComponent = typeof App !== 'undefined' ? App : null;
+  if (!_appComponent) {
+    var _keys = Object.keys(window).filter(function(k) { return typeof window[k] === 'function' && /^[A-Z]/.test(k) && k !== 'React' && k !== 'ReactDOM'; });
+    if (_keys.length > 0) _appComponent = window[_keys[_keys.length - 1]];
+  }
+
+  if (_appComponent) {
+    var root = createRoot(document.getElementById('root'));
+    root.render(React.createElement(_appComponent));
+  } else {
+    document.getElementById('root').innerHTML = '<div style="padding:40px;color:#f85149;font-family:monospace;">No React component found. Define a function component like:<br><br><code>function App() { return &lt;h1&gt;Hello&lt;/h1&gt;; }</code></div>';
+  }
+} catch(e) {
+  document.getElementById('root').innerHTML = '<div style="padding:40px;color:#f85149;font-family:monospace;">' + e.message + '</div>';
+  window.parent.postMessage({ type: 'console', method: 'error', content: e.message }, '*');
+}
+<\/script>
+</body>
+</html>`;
+
+          setHtmlOutput(reactHtml);
+          setOutputs([{ type: "log", content: "✓ React component rendered successfully" }]);
+          setIsRunning(false);
+          return;
+        } catch (jsxError) {
           collectedOutputs.push({
-            type: "warn",
-            content:
-              "⚠ Python simulation: Only print() statements are evaluated. For full Python support, a backend server is needed.",
+            type: "error",
+            content: `JSX Error: ${jsxError.message}`,
           });
+          setOutputs(collectedOutputs);
+          setIsRunning(false);
+          return;
         }
-        setOutputs(collectedOutputs);
-        setIsRunning(false);
-        return;
       }
 
       const isDetailed = inspectMode === "detailed";
@@ -368,7 +419,7 @@ export default function SandboxEditor({ id }) {
   }
 
   const isPreviewLanguage =
-    sandbox.language === "html" || sandbox.language === "css";
+    sandbox.language === "html" || sandbox.language === "css" || sandbox.language === "react";
 
   return (
     <div
@@ -631,7 +682,7 @@ export default function SandboxEditor({ id }) {
                 <span style={{ color: getLanguageColor(sandbox.language), fontWeight: 600 }}>
                   ●
                 </span>
-                index.{sandbox.language === "javascript" ? "js" : sandbox.language === "typescript" ? "ts" : sandbox.language === "python" ? "py" : sandbox.language}
+                index.{sandbox.language === "javascript" ? "js" : sandbox.language === "typescript" ? "ts" : sandbox.language === "react" ? "jsx" : sandbox.language}
               </div>
               <div style={{ flex: 1, overflow: "hidden" }}>
                 <CodeEditor
@@ -661,16 +712,15 @@ export default function SandboxEditor({ id }) {
                 <HtmlPreview
                   html={htmlOutput}
                   onConsoleOutput={handleConsoleOutput}
+                  skipConsoleInject={sandbox.language === "react"}
                 />
               </div>
-              {outputs.length > 0 && (
-                <div style={{ height: "30%", minHeight: 80, borderTop: "1px solid var(--border-color)", overflow: "hidden" }}>
-                  <OutputPanel
-                    outputs={outputs}
-                    onClear={() => setOutputs([])}
-                  />
-                </div>
-              )}
+              <div style={{ height: "30%", minHeight: 80, borderTop: "1px solid var(--border-color)", overflow: "hidden" }}>
+                <OutputPanel
+                  outputs={outputs}
+                  onClear={() => setOutputs([])}
+                />
+              </div>
             </div>
           ) : (
             <OutputPanel

@@ -7,11 +7,19 @@ const LANGUAGE_MAP = {
   typescript: "typescript",
   html: "html",
   css: "css",
-  python: "python",
+  react: "javascript",
 };
 
 export default function CodeEditor({ code, language, onChange }) {
   const monacoLang = LANGUAGE_MAP[language] || "javascript";
+
+  const handleBeforeMount = (monaco) => {
+    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+      jsx: monaco.languages.typescript.JsxEmit.React,
+      allowJs: true,
+      allowNonTsExtensions: true,
+    });
+  };
 
   return (
     <Editor
@@ -20,6 +28,7 @@ export default function CodeEditor({ code, language, onChange }) {
       value={code}
       onChange={(value) => onChange(value || "")}
       theme="vs-dark"
+      beforeMount={handleBeforeMount}
       options={{
         fontSize: 14,
         fontFamily: "'Geist Mono', 'Fira Code', 'Cascadia Code', monospace",

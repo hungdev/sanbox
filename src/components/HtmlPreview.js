@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useMemo } from "react";
 
-export default function HtmlPreview({ html, onConsoleOutput }) {
+export default function HtmlPreview({ html, onConsoleOutput, skipConsoleInject = false }) {
   const iframeRef = useRef(null);
   const callbackRef = useRef(onConsoleOutput);
 
@@ -12,6 +12,8 @@ export default function HtmlPreview({ html, onConsoleOutput }) {
 
   const srcDoc = useMemo(() => {
     if (!html) return "";
+
+    if (skipConsoleInject) return html;
 
     const consoleScript = `<script>
 (function() {
@@ -43,7 +45,7 @@ export default function HtmlPreview({ html, onConsoleOutput }) {
     }
 
     return `${consoleScript}${html}`;
-  }, [html]);
+  }, [html, skipConsoleInject]);
 
   useEffect(() => {
     const handler = (event) => {
