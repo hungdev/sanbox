@@ -10,6 +10,7 @@ import {
   Braces,
   List,
 } from "lucide-react";
+import { transform } from "sucrase";
 import CodeEditor from "./CodeEditor";
 import OutputPanel from "./OutputPanel";
 import HtmlPreview from "./HtmlPreview";
@@ -20,6 +21,7 @@ import {
   getLanguageColor,
   getLanguageLabel,
   DEFAULT_CODE,
+  DEFAULT_HTML_TEMPLATE,
 } from "@/lib/sandboxStore";
 
 export default function SandboxEditor({ id }) {
@@ -33,6 +35,8 @@ export default function SandboxEditor({ id }) {
   const [isSaved, setIsSaved] = useState(true);
   const [inspectMode, setInspectMode] = useState("simple");
   const [hasRun, setHasRun] = useState(false);
+  const [cssTab, setCssTab] = useState("css");
+  const [htmlTemplate, setHtmlTemplate] = useState(DEFAULT_HTML_TEMPLATE);
   const containerRef = useRef(null);
   const isResizing = useRef(false);
 
@@ -41,6 +45,9 @@ export default function SandboxEditor({ id }) {
     if (sb) {
       setSandbox(sb);
       setCode(sb.code);
+      if (sb.htmlTemplate) {
+        setHtmlTemplate(sb.htmlTemplate);
+      }
     } else {
       router.push("/");
     }
@@ -54,12 +61,21 @@ export default function SandboxEditor({ id }) {
     []
   );
 
+  const handleHtmlTemplateChange = useCallback((newHtml) => {
+    setHtmlTemplate(newHtml);
+    setIsSaved(false);
+  }, []);
+
   const handleSave = useCallback(() => {
     if (sandbox) {
-      updateSandbox(sandbox.id, { code });
+      const updates = { code };
+      if (sandbox.language === "css") {
+        updates.htmlTemplate = htmlTemplate;
+      }
+      updateSandbox(sandbox.id, updates);
       setIsSaved(true);
     }
-  }, [sandbox, code]);
+  }, [sandbox, code, htmlTemplate]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -90,7 +106,7 @@ export default function SandboxEditor({ id }) {
     }
 
     if (sandbox.language === "css") {
-      const htmlWithCss = `<!DOCTYPE html><html><head><style>${code}</style></head><body><div class="box"></div></body></html>`;
+      const htmlWithCss = `<!DOCTYPE html><html><head><style>${code}</style></head><body>${htmlTemplate}</body></html>`;
       setHtmlOutput(htmlWithCss);
       setOutputs([{ type: "log", content: "✓ CSS rendered successfully" }]);
       setIsRunning(false);
@@ -103,14 +119,21 @@ export default function SandboxEditor({ id }) {
       let execCode = code;
 
       if (sandbox.language === "typescript") {
-        execCode = code
-          .replace(
-            /(?:export\s+)?(?:interface|type)\s+\w+[\s\S]*?(?=\n(?:const|let|var|function|class|export|import|\/\/|\n)|$)/gm,
-            ""
-          )
-          .replace(/:\s*\w+(?:<[^>]*>)?(?:\[\])?/g, "")
-          .replace(/as\s+\w+/g, "")
-          .replace(/<\w+(?:,\s*\w+)*>/g, "");
+        try {
+          const result = transform(code, {
+            transforms: ["typescript"],
+            disableESTransforms: true,
+          });
+          execCode = result.code;
+        } catch (tsError) {
+          collectedOutputs.push({
+            type: "error",
+            content: `TypeScript Error: ${tsError.message}`,
+          });
+          setOutputs(collectedOutputs);
+          setIsRunning(false);
+          return;
+        }
       }
 
       if (sandbox.language === "python") {
@@ -267,6 +290,10 @@ export default function SandboxEditor({ id }) {
     setTimeout(() => setIsRunning(false), 300);
   }, [sandbox, code, handleSave, inspectMode]);
 
+  const handleConsoleOutput = useCallback((msg) => {
+    setOutputs((prev) => [...prev, msg]);
+  }, []);
+
   const prevInspectMode = useRef(inspectMode);
   useEffect(() => {
     if (prevInspectMode.current !== inspectMode) {
@@ -305,10 +332,16 @@ export default function SandboxEditor({ id }) {
     (e) => {
       const newLang = e.target.value;
       if (sandbox) {
-        const updatedSandbox = updateSandbox(sandbox.id, {
+        const updates = {
           language: newLang,
           code: DEFAULT_CODE[newLang] || "",
-        });
+        };
+        if (newLang === "css") {
+          updates.htmlTemplate = DEFAULT_HTML_TEMPLATE;
+          setHtmlTemplate(DEFAULT_HTML_TEMPLATE);
+          setCssTab("css");
+        }
+        const updatedSandbox = updateSandbox(sandbox.id, updates);
         setSandbox(updatedSandbox);
         setCode(updatedSandbox.code);
         setOutputs([]);
@@ -520,30 +553,95 @@ export default function SandboxEditor({ id }) {
             overflow: "hidden",
           }}
         >
-          <div
-            style={{
-              padding: "6px 16px",
-              background: "var(--editor-bg)",
-              borderBottom: "1px solid var(--border-color)",
-              fontSize: 12,
-              color: "var(--text-muted)",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <span style={{ color: getLanguageColor(sandbox.language), fontWeight: 600 }}>
-              ●
-            </span>
-            index.{sandbox.language === "javascript" ? "js" : sandbox.language === "typescript" ? "ts" : sandbox.language === "python" ? "py" : sandbox.language}
-          </div>
-          <div style={{ flex: 1, overflow: "hidden" }}>
-            <CodeEditor
-              code={code}
-              language={sandbox.language}
-              onChange={handleCodeChange}
-            />
-          </div>
+          {sandbox.language === "css" ? (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  background: "var(--header-bg)",
+                  borderBottom: "1px solid var(--border-color)",
+                  flexShrink: 0,
+                }}
+              >
+                <button
+                  onClick={() => setCssTab("css")}
+                  className={cssTab === "css" ? "tab-active" : "tab-inactive"}
+                  style={{
+                    padding: "8px 16px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    border: "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span style={{ color: "#264de4", fontWeight: 700 }}>●</span>
+                  style.css
+                </button>
+                <button
+                  onClick={() => setCssTab("html")}
+                  className={cssTab === "html" ? "tab-active" : "tab-inactive"}
+                  style={{
+                    padding: "8px 16px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    border: "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span style={{ color: "#e34c26", fontWeight: 700 }}>●</span>
+                  index.html
+                </button>
+              </div>
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                {cssTab === "css" ? (
+                  <CodeEditor
+                    code={code}
+                    language="css"
+                    onChange={handleCodeChange}
+                  />
+                ) : (
+                  <CodeEditor
+                    code={htmlTemplate}
+                    language="html"
+                    onChange={handleHtmlTemplateChange}
+                  />
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div
+                style={{
+                  padding: "6px 16px",
+                  background: "var(--editor-bg)",
+                  borderBottom: "1px solid var(--border-color)",
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ color: getLanguageColor(sandbox.language), fontWeight: 600 }}>
+                  ●
+                </span>
+                index.{sandbox.language === "javascript" ? "js" : sandbox.language === "typescript" ? "ts" : sandbox.language === "python" ? "py" : sandbox.language}
+              </div>
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <CodeEditor
+                  code={code}
+                  language={sandbox.language}
+                  onChange={handleCodeChange}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <div
@@ -558,7 +656,22 @@ export default function SandboxEditor({ id }) {
           }}
         >
           {isPreviewLanguage && htmlOutput ? (
-            <HtmlPreview html={htmlOutput} />
+            <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <HtmlPreview
+                  html={htmlOutput}
+                  onConsoleOutput={handleConsoleOutput}
+                />
+              </div>
+              {outputs.length > 0 && (
+                <div style={{ height: "30%", minHeight: 80, borderTop: "1px solid var(--border-color)", overflow: "hidden" }}>
+                  <OutputPanel
+                    outputs={outputs}
+                    onClear={() => setOutputs([])}
+                  />
+                </div>
+              )}
+            </div>
           ) : (
             <OutputPanel
               outputs={outputs}
